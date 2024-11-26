@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import apiResponse from "../utils/ApiResponse";
 import productModel from "../models/Product.model";
 import mongoose from "mongoose";
+import ShippingModel from "../models/Shipping.model";
 
 const createOrder = async (req: Request, res: Response) => {
   try {
@@ -73,13 +74,25 @@ const createOrder = async (req: Request, res: Response) => {
     // Save the order
     const savedOrder = await order.save();
 
-    return apiResponse(
-      res,
-      201,
-      true,
-      "Order placed successfully.",
-      savedOrder
-    );
+    // Create the shipping record
+    const shipping = new ShippingModel({
+      userId: new mongoose.Types.ObjectId(userId),
+      orderId: savedOrder._id,
+      profileId: new mongoose.Types.ObjectId(shippingAddressId),
+      addressSnapshot: req.body.addressSnapshot,
+      shippingStatus: "Pending",
+      estimatedDeliveryDate: new Date(
+        new Date().setDate(new Date().getDate() + 7)
+      ), // Example: 7 days from now
+    });
+
+    // Save the shipping record
+    const savedShipping = await shipping.save();
+
+    return apiResponse(res, 201, true, "Order placed successfully.", {
+      order: savedOrder,
+      shipping: savedShipping,
+    });
   } catch (error) {
     console.error("Error while placing order:", error);
     return apiResponse(res, 500, false, "Error while placing order.");
@@ -147,7 +160,7 @@ const cancelOrder = async (req: Request, res: Response) => {
       return apiResponse(res, 404, false, "Order not found.");
     }
 
-    // The order to cancel should belonging to user
+    // The order to cancel should belong to the user
     if (order.user_id.toString() !== userId) {
       return apiResponse(
         res,
@@ -157,20 +170,35 @@ const cancelOrder = async (req: Request, res: Response) => {
       );
     }
 
-    // If belonging than cancel
+    // If the order is already cancelled, no further action needed
+    if (order.orderStatus === "Cancelled") {
+      return apiResponse(res, 400, false, "Order is already cancelled.");
+    }
+
+    // Update order status to "Cancelled"
     order.orderStatus = "Cancelled";
     const cancelledOrder = await order.save();
+
+    // Update the shipping status to "Cancelled"
+    const shipping = await ShippingModel.findOne({ orderId: orderId });
+
+    if (shipping) {
+      shipping.shippingStatus = "Cancelled";
+      await shipping.save();
+    } else {
+      console.log("No shipping record found for this order.");
+    }
 
     return apiResponse(
       res,
       200,
       true,
-      "Order Cancelled Successfully",
+      "Order Cancelled Successfully, and shipping status updated.",
       cancelledOrder
     );
   } catch (error) {
-    console.error("Error while Updating order status", error);
-    return apiResponse(res, 500, false, "Error while Updating order status");
+    console.error("Error while updating order status", error);
+    return apiResponse(res, 500, false, "Error while updating order status");
   }
 };
 
@@ -288,11 +316,21 @@ const returnOrder = async (req: Request, res: Response) => {
 
     const updatedOrder = await order.save();
 
+    // Update the shipping status to "Returned"
+    const shipping = await ShippingModel.findOne({ orderId: orderId });
+
+    if (shipping) {
+      shipping.shippingStatus = "Returned";
+      await shipping.save();
+    } else {
+      console.log("No shipping record found for this order.");
+    }
+
     return apiResponse(
       res,
       200,
       true,
-      "Order return requested successfully.",
+      "Order return requested successfully, and shipping status updated.",
       updatedOrder
     );
   } catch (error) {
@@ -386,18 +424,19 @@ const exchangeOrder = async (req: Request, res: Response) => {
       );
     }
 
+    // Update stock for exchanged products
     for (const { productId, quantity } of products) {
       const productDetails = await productModel.findById(productId);
       if (!productDetails) {
-        continue; 
+        continue;
       }
 
+      // Increase stock for returned products (since the user is returning them)
       productDetails.stock += quantity;
       await productDetails.save();
     }
 
-
-    // orderStatus Update
+    // Update order status and products
     order.orderStatus = "Exchange Requested";
     order.products = order.products.map((p: any) => {
       const matchingProduct = products.find(
@@ -415,11 +454,21 @@ const exchangeOrder = async (req: Request, res: Response) => {
 
     const updatedOrder = await order.save();
 
+    // Update the shipping status to "Exchanged"
+    const shipping = await ShippingModel.findOne({ orderId: orderId });
+
+    if (shipping) {
+      shipping.shippingStatus = "Exchanged";
+      await shipping.save();
+    } else {
+      console.log("No shipping record found for this order.");
+    }
+
     return apiResponse(
       res,
       200,
       true,
-      "Exchange request submitted successfully.",
+      "Exchange request submitted successfully, and shipping status updated.",
       updatedOrder
     );
   } catch (error) {
